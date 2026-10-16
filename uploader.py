@@ -1,7 +1,6 @@
 import os
 import json
 import subprocess
-import xml.etree.ElementTree as ET
 import requests
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -13,9 +12,9 @@ CLIENT_SECRET = "GOCSPX-" + "uvFVhhCnqg1mbUoXevKvHjr86A9k"
 REFRESH_TOKEN = "1//05PFTTurtAsbKCgYIARAAGAUSNwF-" + "L9Ir1nzgU8Iy5TL8_PmlI9uuOS8UI_DXBBuNSz-AIGj9x8ZjMOiJiJuCX81YR18PR4Qb8kY"
 
 TRACKER_FILE = "uploaded_music.json"
-CHANNEL_ID = "UCht8qITGkBvXKsR1Byln-wA"
+CHANNEL_HANDLE = "audiolibrary_"
 
-# Aapki provide ki gayi YouTube session cookies
+# Provided YouTube session cookies
 RAW_COOKIES = """# Netscape HTTP Cookie File
 # http://curl.haxx.se/rfc/cookie_spec.html
 
@@ -36,7 +35,10 @@ creds = Credentials(
     token_uri="https://oauth2.googleapis.com/token",
     client_id=CLIENT_ID,
     client_secret=CLIENT_SECRET,
-    scopes=["https://www.googleapis.com/auth/youtube.upload"]
+    scopes=[
+        "https://www.googleapis.com/auth/youtube.upload",
+        "https://www.googleapis.com/auth/youtube.readonly"
+    ]
 )
 youtube = build('youtube', 'v3', credentials=creds)
 
@@ -49,31 +51,34 @@ if os.path.exists(TRACKER_FILE):
 else:
     uploaded_ids = set()
 
-print("Step 1: Feed se latest video check ki ja rahi hai...")
-feed_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={CHANNEL_ID}"
-headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-resp = requests.get(feed_url, headers=headers, timeout=20)
+print("Step 1: YouTube API se channel ki latest video dhoondi ja rahi hai...")
 
-if resp.status_code != 200:
-    print(f"Feed error: {resp.status_code}")
-    exit(1)
+# Audio Library channel ki uploads playlist ID nikaalna
+channel_resp = youtube.channels().list(
+    part="contentDetails",
+    forHandle=CHANNEL_HANDLE
+).execute()
 
-root = ET.fromstring(resp.content)
-ns = {
-    'atom': 'http://www.w3.org/2005/Atom',
-    'yt': 'http://www.youtube.com/xml/schemas/2015',
-    'media': 'http://search.yahoo.com/mrss/'
-}
+if not channel_resp.get("items"):
+    # Fallback to Channel ID
+    channel_resp = youtube.channels().list(
+        part="contentDetails",
+        id="UCht8qITGkBvXKsR1Byln-wA"
+    ).execute()
 
-entry = root.find('atom:entry', ns)
-if entry is None:
-    print("Video nahi mili.")
-    exit(1)
+uploads_playlist_id = channel_resp["items"][0]["contentDetails"]["relatedPlaylists"]["uploads"]
 
-latest_video_id = entry.find('yt:videoId', ns).text
-title = entry.find('atom:title', ns).text
-desc_elem = entry.find('.//media:description', ns)
-description = desc_elem.text if desc_elem is not None else f"{title}\n\nAudio Library Music"
+# Uploads playlist se latest video item lena
+playlist_resp = youtube.playlistItems().list(
+    part="snippet,contentDetails",
+    playlistId=uploads_playlist_id,
+    maxResults=1
+).execute()
+
+latest_item = playlist_resp["items"][0]
+latest_video_id = latest_item["contentDetails"]["videoId"]
+title = latest_item["snippet"]["title"]
+description = latest_item["snippet"]["description"] or f"{title}\n\nAudio Library Music"
 
 target_url = f"https://www.youtube.com/watch?v={latest_video_id}"
 print(f"Target Video: {title} (ID: {latest_video_id})")
@@ -128,7 +133,7 @@ uploaded_ids.add(latest_video_id)
 with open(TRACKER_FILE, "w") as f:
     json.dump(list(uploaded_ids), f, indent=2)
 
-# Temporary files cleanup
+# Cleanup
 for f in [video_file, COOKIE_FILE]:
     if os.path.exists(f):
         os.remove(f)
